@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cifrado por Sustitución (Español extendido)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; max-width: 980px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
+    label { display:block; font-weight: 600; margin: 0 0 6px; }
+    textarea, input[type="text"] {
+      width: 100%; box-sizing: border-box; border: 1px solid #ccc; border-radius: 8px;
+      padding: 10px; font-size: 14px;
+    }
+    textarea { min-height: 130px; resize: vertical; }
+    .buttons { display:flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    button {
+      border: 1px solid #bbb; background: #f7f7f7; padding: 10px 12px; border-radius: 8px;
+      cursor: pointer; font-weight: 600;
+    }
+    button:hover { background: #eee; }
+    .hint { color:#555; font-size: 13px; margin-top: 8px; line-height: 1.35; }
+    .status { margin-top: 8px; font-size: 13px; }
+    .ok { color: #0a7a2f; }
+    .bad { color: #b00020; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    @media (min-width: 900px) { .row { grid-template-columns: 1fr 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>Cifrado por sustitución (Español extendido: Ñ + ÁÉÍÓÚ)</h1>
+
+  <div class="card">
+    <label for="key">Clave (32 caracteres, permutación del alfabeto extendido)</label>
+    <input id="key" class="mono" type="text" autocomplete="off" spellcheck="false"
+      placeholder="Ej: QWERTY... (debe incluir Ñ y ÁÉÍÓÚ y no repetir)" />
+    <div class="buttons">
+      <button id="gen">Generar clave aleatoria</button>
+      <button id="validate">Validar clave</button>
+      <button id="copyKey">Copiar clave</button>
+    </div>
+    <div class="hint">
+      Alfabeto permitido (mayúsculas): <span class="mono" id="alphabet"></span><br/>
+      Nota: el programa preserva mayúsculas/minúsculas al cifrar/descifrar.
+    </div>
+    <div id="status" class="status"></div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <label for="plain">Texto</label>
+      <textarea id="plain" placeholder="Escribe aquí el texto a cifrar o descifrar..."></textarea>
+      <div class="buttons">
+        <button id="encrypt">Cifrar →</button>
+        <button id="decrypt">Descifrar →</button>
+        <button id="clear">Limpiar</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <label for="out">Resultado</label>
+      <textarea id="out" readonly></textarea>
+      <div class="buttons">
+        <button id="copyOut">Copiar resultado</button>
+      </div>
+      <div class="hint">
+        Caracteres que no estén en el alfabeto (espacios, números, signos) se dejan igual.
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // Alfabeto extendido en MAYÚSCULAS (32 símbolos)
+  const ALPH = "ABCDEFGHIJKLMNÑOPQRSTUVWXYZÁÉÍÓÚ";
+  const N = ALPH.length; // 32
+  document.getElementById("alphabet").textContent = ALPH;
+
+  const elKey = document.getElementById("key");
+  const elPlain = document.getElementById("plain");
+  const elOut = document.getElementById("out");
+  const elStatus = document.getElementById("status");
+
+  const upper = (ch) => ch.toLocaleUpperCase("es-ES");
+  const lower = (ch) => ch.toLocaleLowerCase("es-ES");
+
+  // Mapa índice del alfabeto (para buscar rápido)
+  const alphIndex = new Map([...ALPH].map((c, i) => [c, i]));
+
+  function setStatus(msg, ok) {
+    elStatus.textContent = msg;
+    elStatus.className = "status " + (ok ? "ok" : "bad");
+  }
+
+  function normalizeKeyInput(raw) {
+    // Quitamos espacios alrededor, pero NO tocamos el contenido (para no “romper”)
+    return raw.trim();
+  }
+
+  function validateKey(key) {
+    key = normalizeKeyInput(key);
+    if (key.length !== N) {
+      return { ok:false, msg:`Clave inválida: debe tener ${N} caracteres.` };
+    }
+
+    // Validar: cada char (en mayúscula) debe pertenecer al alfabeto y no repetirse
+    const seen = new Set();
+    for (const ch of [...key]) {
+      const up = upper(ch);
+      if (!alphIndex.has(up)) {
+        return { ok:false, msg:`Clave inválida: contiene '${ch}' fuera del alfabeto permitido.` };
+      }
+      if (seen.has(up)) {
+        return { ok:false, msg:`Clave inválida: tiene repetido '${up}'.` };
+      }
+      seen.add(up);
+    }
+
+    // Además debe contener TODOS los símbolos del alfabeto (como es permutación)
+    if (seen.size !== N) {
+      return { ok:false, msg:`Clave inválida: faltan símbolos o hay duplicados.` };
+    }
+
+    return { ok:true, msg:"Clave válida ✅" };
+  }
+
+  function buildMaps(key) {
+    // key: string longitud N, permutación del alfabeto
+    const k = [...normalizeKeyInput(key)].map(ch => upper(ch));
+
+    const enc = new Map(); // ALPH[i] -> k[i]
+    const dec = new Map(); // k[i] -> ALPH[i]
+    for (let i = 0; i < N; i++) {
+      enc.set(ALPH[i], k[i]);
+      dec.set(k[i], ALPH[i]);
+    }
+    return { enc, dec };
+  }
+
+  function transformText(text, key, mode /*"enc"|"dec"*/) {
+    const v = validateKey(key);
+    if (!v.ok) {
+      setStatus(v.msg, false);
+      return "";
+    }
+    setStatus(v.msg, true);
+
+    const { enc, dec } = buildMaps(key);
+    const map = (mode === "enc") ? enc : dec;
+
+    let out = "";
+    for (const ch of [...text]) {
+      const up = upper(ch);
+      const isIn = alphIndex.has(up);
+      if (!isIn) {
+        out += ch; // no toca
+        continue;
+      }
+
+      const isLower = (ch === lower(ch)) && (ch !== upper(ch)); // detecta letras minúsculas (incluye ñ/á)
+      const mapped = map.get(up); // siempre existe si key válida
+      out += isLower ? lower(mapped) : mapped; // preserva caso
+    }
+    return out;
+  }
+
+  function secureRandomInt(maxExclusive) {
+    // 0..maxExclusive-1 usando crypto
+    const buf = new Uint32Array(1);
+    const limit = Math.floor(0x100000000 / maxExclusive) * maxExclusive;
+    while (true) {
+      crypto.getRandomValues(buf);
+      const x = buf[0];
+      if (x < limit) return x % maxExclusive;
+    }
+  }
+
+  function shuffle(arr) {
+    // Fisher-Yates con random seguro
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = secureRandomInt(i + 1);
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  function generateRandomKey() {
+    const letters = [...ALPH];
+    shuffle(letters);
+    return letters.join("");
+  }
+
+  async function copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // --- Eventos UI ---
+  document.getElementById("gen").addEventListener("click", () => {
+    const k = generateRandomKey();
+    elKey.value = k;
+    const v = validateKey(k);
+    setStatus(v.msg, v.ok);
+  });
+
+  document.getElementById("validate").addEventListener("click", () => {
+    const v = validateKey(elKey.value);
+    setStatus(v.msg, v.ok);
+  });
+
+  document.getElementById("encrypt").addEventListener("click", () => {
+    elOut.value = transformText(elPlain.value, elKey.value, "enc");
+  });
+
+  document.getElementById("decrypt").addEventListener("click", () => {
+    elOut.value = transformText(elPlain.value, elKey.value, "dec");
+  });
+
+  document.getElementById("clear").addEventListener("click", () => {
+    elPlain.value = "";
+    elOut.value = "";
+  });
+
+  document.getElementById("copyKey").addEventListener("click", async () => {
+    const ok = await copyToClipboard(elKey.value);
+    setStatus(ok ? "Clave copiada ✅" : "No se pudo copiar la clave (permisos del navegador).", ok);
+  });
+
+  document.getElementById("copyOut").addEventListener("click", async () => {
+    const ok = await copyToClipboard(elOut.value);
+    setStatus(ok ? "Resultado copiado ✅" : "No se pudo copiar el resultado (permisos del navegador).", ok);
+  });
+
+  // Estado inicial
+  setStatus("Ingresa una clave o genera una aleatoria.", true);
+})();
+</script>
+</body>
+</html>
